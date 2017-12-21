@@ -1,0 +1,184 @@
+---
+title: "Case 1"
+output:
+  html_notebook: default
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+```{r}
+options(warn=-1)
+library(readr)    
+library(corrplot)
+library(dbscan)
+```
+
+# Importieren großer CSV-Dateien
+
+```{r, warning=FALSE}
+kb_anonym <- read_csv("_data/kb_anonym.csv")
+
+```
+## Overview
+### Open in Interactive Table
+```{r}
+
+View(kb_anonym)
+```
+
+
+### Print Column Infos
+```{r}
+
+str(kb_anonym)
+```
+
+### Print Summary of Statistics
+```{r}
+summary(kb_anonym)
+```
+
+##Select interesting columns into new Data Frame
+```{r}
+
+kb_small <- kb_anonym[sample(nrow(kb_anonym),50000),]
+
+kb_clean <- data.frame(id = integer(dim(kb_small)[1]))
+
+kb_clean$DOY <- as.numeric(strftime(as.Date(kb_small$Belegdatum,format="%d.%m.%Y"), format = "%j")) / 366
+kb_clean$US <- kb_small$Umsatz_Soll %/% 100
+kb_clean$US <- kb_clean$US / max(kb_clean$US)
+kb_clean$UH <- kb_small$Umsatz_Haben %/% 100
+kb_clean$UH <- kb_clean$UH / max(kb_clean$UH)
+
+
+BS <- (sapply(levels(as.factor(kb_small$BU_Schl)), function(x) as.integer(as.logical(x == kb_small$BU_Schl))))
+colnames(BS) <- paste("BS", levels(as.factor(kb_small$BU_Schl)), sep="")
+#BS <- as.factor(kb_small$BU_Schl)
+kb_clean <- cbind(kb_clean, BS)
+
+SS <- (sapply(levels(as.factor(kb_small$Steuersatz)), function(x) as.integer(as.logical(x == kb_small$Steuersatz))))
+colnames(SS) <- paste("SS", levels(as.factor(kb_small$Steuersatz)), sep="")
+#SS <- as.factor(kb_small$Steuersatz)
+kb_clean <- cbind(kb_clean, SS)
+
+KTG <- (sapply(levels(as.factor(kb_small$Ktonr %/% 1000)), function(x) as.integer(as.logical(x == as.factor(kb_small$Ktonr %/% 1000)))))
+colnames(KTG) <- paste("KTG", levels(as.factor(kb_small$Ktonr %/% 1000)), sep="")
+kb_clean <- cbind(kb_clean, KTG)
+
+GKTG <- (sapply(levels(as.factor(kb_small$GKtonr %/% 1000)), function(x) as.integer(as.logical(x == as.factor(kb_small$GKtonr %/% 1000)))))
+colnames(GKTG) <- paste("KTG", levels(as.factor(kb_small$GKtonr %/% 1000)), sep="")
+kb_clean <- cbind(kb_clean, GKTG)
+
+kb_clean$BID <- kb_small$BereichsId
+
+kb_clean <- sapply( kb_clean, as.numeric )
+kb_clean <- as.data.frame(kb_clean)
+
+
+
+dim(kb_clean)
+str(kb_clean)
+```
+
+
+```{r}
+
+cat('Dataset has', dim(kb_clean)[1], 'rows and', dim(kb_clean)[2], 'columns.')
+cat("The number of duplicated rows are", nrow(kb_clean) - nrow(unique(kb_clean)))
+
+
+```
+
+```{r}
+
+correlations <- cor(na.omit(kb_clean[,-1]))
+#row_indic <- apply(correlations, 1, function(x) sum(x > 0.3 | x < -0.3) > 1)
+#correlations<- correlations[row_indic ,row_indic ]
+corrplot(correlations, method="square")
+
+plotCorr <- function(data_in, i){
+    data <- data.frame(x = data_in[[i]], BS9 = data_in$BS9)
+    p <- ggplot(data, aes(x = x, y = BS9)) + geom_point(shape = 1, na.rm = TRUE) + geom_smooth(method = lm ) + xlab(paste0(colnames(data_in)[i], '\n', 'R-Squared: ', round(cor(data_in[[i]], data$BS9, use = 'complete.obs'), 2))) + theme_light()
+    return(suppressWarnings(p))
+}
+
+doPlots <- function(data_in, fun, ii, ncol=3) {
+    pp <- list()
+    for (i in ii) {
+        p <- fun(data_in=data_in, i=i)
+        pp <- c(pp, list(p))
+    }
+    do.call("grid.arrange", c(pp, ncol=ncol))
+}
+```
+
+### trying sth else
+
+```{r}
+
+sum(duplicated(kb_clean))
+kb_unique <- unique(kb_clean)
+```
+```{r}
+kb_unique.scaled <- kb_unique[complete.cases(kb_unique), ]
+kb.clust <- kmeans(Y, 3,100)
+```
+
+
+```{r}
+table(kb.clust$cluster, kb_unique$BID)
+```
+
+```{r}
+X <- kb_unique.scaled[,1:dim(kb_unique)[2]-1]
+kb.dbscan <- dbscan(X,eps=0.2, MinPts=3)
+```
+
+```{r}
+table(kb.dbscan$cluster, kb_unique$BID)
+```
+```{r}
+Y <- as.numeric(kb_unique.scaled[,dim(kb_unique)[2]] == 10)
+sum(Y)
+```
+### Achtung, kann lange dauern
+```{r}
+library(e1071)
+X$id=NULL
+model <- svm(X,Y, probability = FALSE)
+pred <- predict(model, X)
+table(pred, Y)
+```
+```{r}
+library(caret)
+ds <- downSample(X,as.factor(Y))
+```
+## training und test
+```{r}
+# 75% of the sample size
+smp_size <- floor(0.75 * dim(ds)[1])
+
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(dim(ds)[1]), size = smp_size)
+
+dstrain <- ds[train_ind, ]
+dstest <- ds[-train_ind, ]
+```
+
+
+## mal knn
+
+```{r}
+library(class)
+model <- knn(train = dstrain, test = dstest,cl = dstrain$Class, k=50)
+```
+### Eval
+```{r}
+library("gmodels")
+
+ct <- CrossTable(x=model, y=dstest$Class, prop.chisq = FALSE)
+fourfoldplot(ct$t)
+```
+
